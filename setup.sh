@@ -2,39 +2,40 @@
 
 DISK_NAME=mongo-disk
 DISK_SIZE=200GB
-ZONE=europe-west1-c
+# Set your gcloud defaults. You should change them to yours.
+PROJECT=precise-bonus-599
+ZONE=asia-east1-a
+CLUSTER=meteor
 
+gcloud config set project $PROJECT
+gcloud config set compute/zone $ZONE
+gcloud config set container/cluster $CLUSTER
 
-# TODO make project, zone, region and cluster configurable and pass it to every gcloud command?
-# TODO set CLOUDSDK_CONTAINER_CLUSTER ?
-
-# Create a new cluster called "meteor". This will take a few minutes.
-gcloud preview container clusters create meteor
-
+# Create a new cluster called $CLUSTER. This will take a few minutes.
+gcloud preview container clusters create $CLUSTER
 
 if gcloud compute disks list $DISK_NAME | grep READY > /dev/null
 then
   echo "$DISK_NAME already exists."
 else
   echo "Creating $DISK_NAME:"
-  gcloud compute disks create --size=$DISK_SIZE --zone=$ZONE $DISK_NAME
+  gcloud compute disks create --size=$DISK_SIZE $DISK_NAME
   echo "Attaching disk to Kubernetes master node:"
-  gcloud compute instances attach-disk --zone=$ZONE --disk=$DISK_NAME --device-name temp-data k8s-meteor-master
+  gcloud compute instances attach-disk --disk=$DISK_NAME --device-name temp-data k8s-${CLUSTER}-master
   echo "Safe formatting the disk:"
-  gcloud compute ssh --zone=$ZONE k8s-meteor-master --command "sudo mkdir /mnt/tmp && sudo /usr/share/google/safe_format_and_mount /dev/disk/by-id/google-temp-data /mnt/tmp"
+  gcloud compute ssh k8s-${CLUSTER}-master --command "sudo mkdir /mnt/tmp && sudo /usr/share/google/safe_format_and_mount /dev/disk/by-id/google-temp-data /mnt/tmp"
   echo "Detaching disk from master node:"
-  gcloud compute instances detach-disk --zone=$ZONE --disk $DISK_NAME k8s-meteor-master
+  gcloud compute instances detach-disk --disk $DISK_NAME k8s-${CLUSTER}-master
   echo "Disk is ready for containers to use."
 fi
 
-
 # Create pods and a service based on the JSON configuration
-gcloud preview container pods create --config-file mongo-pod.json
-gcloud preview container services create --config-file mongo-service.json
+gcloud preview container kubectl create -f mongo-pod.json
+gcloud preview container kubectl create -f mongo-service.json
 
 echo "Waiting for Mongo to boot before creating the Meteor pods..."
 while true; do
-  MONGO_STATUS=`gcloud preview container pods describe mongo | tr -d '\n' | tr ' ' '\n' | tail -n1`
+  MONGO_STATUS=`gcloud preview container kubectl get pods mongo  | awk '(NR==2){print $7}'`
   if [ "$MONGO_STATUS" == "Running" ]; then
     echo
     break
@@ -44,12 +45,12 @@ while true; do
 done
 
 # Create our replication controller and service, also based on the JSON configuration
-gcloud preview container replicationcontrollers create --config-file meteor-controller.json
-gcloud preview container services create --config-file meteor-service.json
+gcloud preview container kubectl create -f meteor-controller.json
+gcloud preview container kubectl create -f meteor-service.json
 
 # We need to configure the correct firewall rules or nothing will get through
-gcloud compute firewall-rules create meteor-80 --allow=tcp:80 --target-tags k8s-meteor-node
+gcloud compute firewall-rules create meteor-80 --allow=tcp:80 --target-tags k8s-${CLUSTER}-node
 
 echo
 echo "Your Meteor app should now be available on the following ip address:"
-gcloud compute forwarding-rules list meteor
+gcloud compute forwarding-rules list -r .*meteor
